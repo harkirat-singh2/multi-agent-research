@@ -126,15 +126,15 @@
     <script>
       async function runResearch() {
         const query = document.getElementById("query").value.trim();
-        const status = document.getElementById("status");
 
         const reportEl = document.getElementById("report");
         const critiqueEl = document.getElementById("critique");
         const sourcesEl = document.getElementById("sources");
+        const status = document.getElementById("status");
 
         if (!query) return;
 
-        // Clear UI
+        // Reset UI
         reportEl.innerHTML = "";
         critiqueEl.innerHTML = "";
         sourcesEl.innerHTML = "";
@@ -152,39 +152,49 @@
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
 
-          let mode = "report";
+          let fullText = "";
+          let lastLength = 0;
 
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            const chunk = decoder.decode(value);
+            const chunk = decoder.decode(value, { stream: true });
+            fullText += chunk;
 
-            // Switch modes based on backend markers
-            if (chunk.includes("=== CRITIQUE ===")) {
-              mode = "critique";
-              continue;
+            // 🔥 SPLIT SECTIONS SAFELY (even if chunks break)
+            let report = "";
+            let critique = "";
+            let sources = "";
+
+            if (fullText.includes("=== CRITIQUE ===")) {
+              const parts = fullText.split("=== CRITIQUE ===");
+              report = parts[0];
+
+              if (parts[1].includes("🔗 SOURCES")) {
+                const subParts = parts[1].split("🔗 SOURCES");
+                critique = subParts[0];
+                sources = subParts[1];
+              } else {
+                critique = parts[1];
+              }
+            } else {
+              report = fullText;
             }
 
-            if (chunk.includes("🔗 SOURCES:")) {
-              mode = "sources";
-              continue;
-            }
+            // 🔥 UPDATE UI
+            reportEl.innerText = report;
+            critiqueEl.innerText = critique;
+            sourcesEl.innerText = sources;
 
-            if (mode === "report") {
-              reportEl.innerHTML += chunk;
-              reportEl.scrollTop = reportEl.scrollHeight;
-            } else if (mode === "critique") {
-              critiqueEl.innerHTML += chunk;
-            } else if (mode === "sources") {
-              sourcesEl.innerHTML += chunk;
-            }
+            // Auto scroll
+            reportEl.scrollTop = reportEl.scrollHeight;
           }
 
           status.innerHTML = "✅ Completed";
         } catch (err) {
           status.innerHTML = "❌ Error occurred";
-          reportEl.innerHTML = err.message;
+          console.error(err);
         }
       }
     </script>
