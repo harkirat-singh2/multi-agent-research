@@ -1,210 +1,160 @@
+import re
 from app.agents.search_agent import build_search_agent
 from app.agents.reader_agent import build_reader_agent
 from app.chains.writer import writer_chain
 from app.chains.critic import critic_chain
-from app.core.utils import extract_urls, safe_invoke
-from app.core.config import llm
-import time
-import concurrent.futures
 
 
-# =========================================================
-# 🚀 MAIN PIPELINE
-# =========================================================
+# ================================
+# Helper Functions
+# ================================
+
+def extract_urls(text):
+    return re.findall(r'https?://\S+', text)
+
+
+def to_text(x):
+    """Convert LangChain AIMessage → string safely"""
+    return x.content if hasattr(x, "content") else str(x)
+
+
+# ================================
+# MAIN PIPELINE (STREAMING)
+# ================================
 
 def run_research_pipeline(topic: str):
 
-    state = {
-        "topic": topic,
-        "steps": [],
-        "search_result": "",
-        "urls": [],
-        "scraped_content": "",
-        "summary": "",
-        "report": "",
-        "critique": ""
-    }
+    state = {}
 
-    print(f"\n🚀 Starting research for: {topic}")
-
-    # ===== STEP 1: SEARCH =====
-    search_agent = build_search_agent()
-    state["steps"].append("Searching web")
-
-    search_output = safe_invoke(
-        search_agent,
-        {"messages": [("user", f"Find reliable and recent info about: {topic}")]}
-    )
-
-    state["search_result"] = search_output
-    print("\n🔍 SEARCH RESULT:\n", search_output[:500])
-
-    # ===== STEP 2: EXTRACT URLS =====
-    urls = extract_urls(search_output)
-
-    if not urls:
-        state["steps"].append("No URLs found")
-        state["scraped_content"] = "No sources available."
-        print("\n⚠️ No URLs found.")
-    else:
-        urls = urls[:3]
-        state["urls"] = urls
-        state["steps"].append(f"{len(urls)} URLs extracted")
-
-        print("\n🌐 URLS:\n", urls)
-
-        # ===== STEP 3: PARALLEL SCRAPING =====
-        reader_agent = build_reader_agent()
-        state["steps"].append("Parallel scraping started")
-
-        def scrape(url):
-            result = safe_invoke(reader_agent, {
-                "messages": [("user", f"Extract useful content from:\n{url}")]
-            })
-
-            # 🔁 Retry once if failed
-            if "Error" in result:
-                result = safe_invoke(reader_agent, {
-                    "messages": [("user", f"Extract useful content from:\n{url}")]
-                })
-
-            return result
-
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            results = list(executor.map(scrape, urls))
-
-        state["scraped_content"] = "\n\n".join(results)
-
-    print("\n📖 SCRAPED CONTENT:\n", state["scraped_content"][:500])
-
-    # =========================================================
-    # 🧠 STEP 4: SUMMARIZATION (NEW)
-    # =========================================================
-    state["steps"].append("Summarizing content")
+    # ================================
+    # STEP 1: SEARCH
+    # ================================
+    yield "🔍 Searching...\n"
 
     try:
-        summary = llm.invoke(
-            f"Extract key insights, trends, and important facts:\n{state['scraped_content'][:1200]}"
-        )
-        state["summary"] = summary.content
+        search_agent = build_search_agent()
+        search_result = search_agent.invoke({
+            "messages": [("user", f"Find recent reliable information about {topic}")]
+        })
+
+        state["search_result"] = search_result["messages"][-1].content
+
     except Exception as e:
-        state["summary"] = f"Summary failed: {str(e)}"
+        yield f"❌ Search failed: {str(e)}\n"
+        return
 
-    print("\n🧠 SUMMARY:\n", state["summary"][:500])
+    # ================================
+    # STEP 2: EXTRACT URLS
+    # ================================
+    yield "🌐 Extracting URLs...\n"
 
-    # =========================================================
-    # ✍️ STEP 5: WRITING
-    # =========================================================
-    state["steps"].append("Generating report")
+    urls = extract_urls(state["search_result"])
+
+    if not urls:
+        yield "⚠️ No URLs found\n"
+        state["scraped_content"] = ""
+    else:
+        yield f"📖 Scraping {len(urls[:2])} sources...\n"
+
+        reader_agent = build_reader_agent()
+        contents = []
+
+        for url in urls[:2]:
+            yield f"➡️ {url}\n"
+
+            try:
+                result = reader_agent.invoke({
+                    "messages": [("user", f"Scrape this URL:\n{url}")]
+                })
+
+                content = result["messages"][-1].content
+                contents.append(content)
+
+            except Exception as e:
+                contents.append(f"Failed to scrape {url}")
+
+        state["scraped_content"] = "\n\n".join(contents)
+
+    # ================================
+    # STEP 3: SUMMARIZE (SAFE)
+    # ================================
+    yield "\n🧠 Summarizing...\n"
+
+    try:
+        summary_input = (
+            state["search_result"][:500] +
+            "\n\n" +
+            state["scraped_content"][:800]
+        )
+
+        summary = writer_chain.invoke({
+            "topic": topic,
+            "research": summary_input
+        })
+
+        summary = to_text(summary)
+
+    except Exception as e:
+        yield f"❌ Summary failed: {str(e)}\n"
+        summary = "Summary failed"
+
+    state["summary"] = summary
+
+    # ================================
+    # STEP 4: REPORT
+    # ================================
+    yield "\n✍️ Writing report...\n"
 
     try:
         report = writer_chain.invoke({
             "topic": topic,
-            "research": state["summary"]   # ✅ using summary (IMPORTANT)
+            "research": summary
         })
-        if hasattr(report, "content"):
-            report = report.content
-        state["report"] = report
+
+        report = to_text(report)
+
     except Exception as e:
-        state["report"] = f"Report generation failed: {str(e)}"
+        yield f"❌ Report failed: {str(e)}\n"
+        report = "Report generation failed"
 
-    print("\n✍️ REPORT:\n", state["report"][:800])
+    state["report"] = report
 
-    # =========================================================
-    # 🧠 STEP 6: CRITIC
-    # =========================================================
-    state["steps"].append("Reviewing report")
-
-    try:
-        critique = critic_chain.invoke({
-            "report": state["report"]
-        })
-        if hasattr(critique, "content"):
-            critique = critique.content
-        state["critique"] = critique
-    except Exception as e:
-        state["critique"] = f"Critique failed: {str(e)}"
-
-    print("\n🧠 CRITIQUE:\n", state["critique"])
-
-    # =========================================================
-    # ✅ FINAL OUTPUT
-    # =========================================================
-    state["steps"].append("Pipeline completed")
-
-    return {
-        "report": state["report"],
-        "critique": state["critique"],
-        "sources": state["urls"],   # 🔗 important
-        "steps": state["steps"]
-    }
-
-
-# =========================================================
-# 🌊 STREAMING VERSION (UPDATED)
-# =========================================================
-
-def run_research_stream(topic: str):
-
-    yield "🔍 Searching...\n"
-
-    search_agent = build_search_agent()
-    search_result = safe_invoke(
-        search_agent,
-        {"messages": [("user", topic)]}
-    )
-
-    yield "🌐 Extracting URLs...\n"
-    urls = extract_urls(search_result)[:2]
-
-    reader_agent = build_reader_agent()
-
-    yield "📖 Scraping sources...\n"
-
-    contents = []
-    for url in urls:
-        content = safe_invoke(reader_agent, {
-            "messages": [("user", url)]
-        })
-
-        # retry
-        if "Error" in content:
-            content = safe_invoke(reader_agent, {
-                "messages": [("user", url)]
-            })
-
-        contents.append(content)
-        yield f"✔ Scraped: {url}\n"
-
-    yield "\n🧠 Summarizing...\n"
-
-    summary = llm.invoke(
-        f"Extract key insights:\n{str(contents)[:1200]}"
-    )
-
-    yield "\n✍️ Writing report...\n\n"
-
-    report = writer_chain.invoke({
-        "topic": topic,
-        "research": summary
-    })
+    # ================================
+    # STREAM REPORT
+    # ================================
+    yield "\n"
 
     for char in report:
         yield char
 
-    yield "\n\n🧠 Reviewing...\n"
-
-    critique = critic_chain.invoke({
-    "report": report
-})
-
+    # ================================
+    # STEP 5: CRITIQUE
+    # ================================
     yield "\n\n=== CRITIQUE ===\n"
 
-# stream critique character by character
+    try:
+        critique = critic_chain.invoke({
+            "report": report
+        })
+
+        critique = to_text(critique)
+
+    except Exception as e:
+        yield f"❌ Critique failed: {str(e)}\n"
+        critique = "Critique failed"
+
+    state["critique"] = critique
+
     for char in critique:
         yield char
-        time.sleep(0.002)
 
+    # ================================
+    # STEP 6: SOURCES
+    # ================================
     yield "\n\n🔗 SOURCES:\n"
-    for url in urls:
-        yield f"- {url}\n"
+
+    if urls:
+        for url in urls[:5]:
+            yield f"- {url}\n"
+    else:
+        yield "No sources found\n"
