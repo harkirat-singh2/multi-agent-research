@@ -142,7 +142,7 @@
 
       try {
         const response = await fetch(
-          `http://127.0.0.1:8000/research/stream?query=${encodeURIComponent(query)}`
+          `https://multi-agent-research-a9s2.onrender.com/research/stream?query=${encodeURIComponent(query)}`
         );
 
         const reader = response.body.getReader();
