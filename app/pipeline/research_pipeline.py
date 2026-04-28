@@ -22,7 +22,7 @@ def to_text(x):
 # MAIN PIPELINE (STREAMING)
 # ================================
 
-def run_research_pipeline(topic: str):
+def run_research_stream(topic: str):
 
     state = {}
 
