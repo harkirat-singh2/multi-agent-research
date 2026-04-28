@@ -86,7 +86,7 @@ def run_research_pipeline(topic: str):
         summary = llm.invoke(
             f"Extract key insights, trends, and important facts:\n{state['scraped_content'][:1200]}"
         )
-        state["summary"] = summary
+        state["summary"] = summary.content
     except Exception as e:
         state["summary"] = f"Summary failed: {str(e)}"
 
@@ -102,6 +102,8 @@ def run_research_pipeline(topic: str):
             "topic": topic,
             "research": state["summary"]   # ✅ using summary (IMPORTANT)
         })
+        if hasattr(report, "content"):
+            report = report.content
         state["report"] = report
     except Exception as e:
         state["report"] = f"Report generation failed: {str(e)}"
@@ -117,6 +119,8 @@ def run_research_pipeline(topic: str):
         critique = critic_chain.invoke({
             "report": state["report"]
         })
+        if hasattr(critique, "content"):
+            critique = critique.content
         state["critique"] = critique
     except Exception as e:
         state["critique"] = f"Critique failed: {str(e)}"
