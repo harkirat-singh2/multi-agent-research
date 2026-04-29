@@ -6,6 +6,8 @@ client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 @tool
 def web_search(query: str) -> str:
+    """Search the web using Tavily and return top results with URLs."""
+    
     response = client.search(query=query, max_results=3)
 
     results = []
